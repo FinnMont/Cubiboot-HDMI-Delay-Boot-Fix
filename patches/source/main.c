@@ -68,6 +68,7 @@ __attribute_reloc__ void (*__OSStopAudioSystem)();
 // for setup
 __attribute_reloc__ void (*orig_thread_init)();
 __attribute_reloc__ void (*menu_init)(int unk);
+__attribute_reloc__ void (*cube_init)();
 __attribute_reloc__ void (*main)();
 
 __attribute_reloc__ model *bg_outer_model;
@@ -305,6 +306,49 @@ __attribute_used__ void mod_cube_anim() {
     }
 }
 
+// preboot_delay_ms: lengthen the boot animation's opening pause.
+//
+// The IPL only turns the picture on with the first frame of the boot animation. Until
+// then the VI is blanked (zero active lines), which an HDMI adapter treats as no signal,
+// so waiting anywhere before the animation leaves the TV nothing to lock onto and it only
+// starts syncing once the cube is already falling. The animation opens with a pause
+// before the fall (fall_delay_frames); lengthening that pause makes the IPL itself show
+// its black first frame for the delay, with the picture on, and the whole animation
+// follows. The audio cues are counted in frames from the start, so they move by the same
+// amount to stay in sync. Approach from makeo/cubiboot#3 (Last-Colossi).
+//
+// Applied after mod_cube_anim(), which resets the pause when force_progressive re-times a
+// PAL IPL for 60 Hz -- otherwise that reset would swallow the delay.
+__attribute_data__ static u8 preboot_hold_total = 0; // fall_delay_frames as we left it
+
+static s16 shift_audio_cue(s16 frames, s32 added) {
+    if (frames < 0) return frames; // leave any disabled (negative) cue alone
+    s32 shifted = (s32)frames + added;
+    return shifted > 32767 ? 32767 : (s16)shifted;
+}
+
+static void apply_preboot_hold() {
+    if (!preboot_delay_ms) return;
+
+    const u32 fields_per_sec = rmode->viTVMode >> 2 == VI_NTSC ? 60 : 50;
+    const u32 extra = ((u64)preboot_delay_ms * fields_per_sec + 500) / 1000;
+
+    // The pause is a single-byte frame counter: about 4 s at 60 Hz, 5 s at 50 Hz at most.
+    const u32 before = cube_state->fall_delay_frames;
+    u32 total = before + extra;
+    if (total > 255) total = 255;
+    const s32 added = (s32)(total - before);
+    if (added <= 0) return;
+
+    cube_state->fall_delay_frames = (u8)total;
+    cube_state->audio_cue_frames_a = shift_audio_cue(cube_state->audio_cue_frames_a, added);
+    cube_state->audio_cue_frames_b = shift_audio_cue(cube_state->audio_cue_frames_b, added);
+    cube_state->audio_cue_frames_c = shift_audio_cue(cube_state->audio_cue_frames_c, added);
+    preboot_hold_total = (u8)total;
+
+    OSReport("preboot_delay_ms: opening pause %u -> %u frames\n", before, total);
+}
+
 // Resolve the configured default folder into a path the menu can open.
 // Falls back to the SD root ("/") when unset or when the folder can't be opened.
 __attribute_used__ char* resolve_default_folder() {
@@ -388,27 +432,18 @@ __attribute_used__ void pre_menu_init(int unk) {
     mod_cube_anim();
 
     // Delay before the boot animation, so a TV / GCVideo has time to lock onto the signal.
-    // Waiting on retrace rather than the time base keeps VI running through the wait.
-    //
-    // VI running is not enough on its own, though: the IPL keeps the screen blanked until
-    // the first frame of the animation, and a blanked VI sends zero active lines -- no
-    // picture at all -- so a GCVideo-based HDMI adapter has nothing to lock onto and the
-    // TV only starts syncing once the animation is already playing. So after the first
-    // couple of fields (letting the IPL's own video setup reach the hardware) the wait
-    // shows a real, solid black picture in the IPL's own mode, and right after the last
-    // field every register is put back as the IPL left it. See preboot_signal_begin().
-    const u32 fields_per_sec = rmode->viTVMode >> 2 == VI_NTSC ? 60 : 50;
-    const u32 total_frames = ((u64)preboot_delay_ms * fields_per_sec) / 1000;
-    bool holding_picture = false;
-    for (u32 i = 0; i < total_frames; i++) {
-        VIWaitForRetrace();
-        if (i == 1) {
-            holding_picture = preboot_signal_begin(rmode->viTVMode, rmode->viHeight, rmode->viYOrigin);
-        }
-    }
-    if (holding_picture) {
-        // Still right after the last retrace: back to the IPL's own (blanked) state.
-        preboot_signal_end();
+    // Done by lengthening the animation's own opening pause -- see apply_preboot_hold().
+    apply_preboot_hold();
+}
+
+// The IPL's cube_init, hooked so the opening pause survives it: if cube_init runs after
+// pre_menu_init and puts the animation timings back to their defaults, re-apply ours.
+__attribute_used__ void pre_cube_init() {
+    cube_init();
+
+    if (preboot_hold_total && cube_state->fall_delay_frames != preboot_hold_total) {
+        mod_cube_anim();
+        apply_preboot_hold();
     }
 }
 
