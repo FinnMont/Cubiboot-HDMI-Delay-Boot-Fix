@@ -99,7 +99,7 @@ void post_ipl_loaded() {
         VIDEO_Configure(rmode);
         VIDEO_SetNextFramebuffer(xfb);
         VIDEO_ClearFrameBuffer(rmode, xfb, COLOR_BLACK);
-        VIDEO_SetBlack(FALSE);
+        VIDEO_SetBlack(TRUE); // stays blanked, like the loader's own setup in main.c
         VIDEO_Flush();
         VIDEO_WaitVSync();
         if(rmode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();

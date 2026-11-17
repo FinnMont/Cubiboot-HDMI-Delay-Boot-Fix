@@ -41,7 +41,7 @@ PATCHES_PATH := $(PROJDIR)/$(PATCHES)
 CFLAGS	= -O3 -Wno-unused-function -Wall $(MACHDEP) $(INCLUDE)
 CXXFLAGS	=	$(CFLAGS)
 
-LDFLAGS	=	$(MACHDEP) -Wl,-Map,$(notdir $@).map -T $(DEVKITPPC)/powerpc-eabi/lib/ogc.ld -T $(PROJDIR)/scripts/override.ld 
+LDFLAGS	=	$(MACHDEP) -Wl,-Map,$(notdir $@).map -T $(DEVKITPPC)/powerpc-eabi/lib/ogc.ld -T $(PROJDIR)/scripts/override.ld -Wl,--wrap=c_default_exceptionhandler
 
 #---------------------------------------------------------------------------------
 # any extra libraries we wish to link with the project

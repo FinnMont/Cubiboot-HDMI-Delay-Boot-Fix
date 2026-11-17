@@ -58,6 +58,9 @@ __attribute_data__ static int fix_pal_ntsc = 0;
 // used for optional delays
 __attribute_data__ u32 preboot_delay_ms = 0;
 __attribute_data__ u32 postboot_delay_ms = 0;
+__attribute_data__ u32 preboot_sound_ticks = 0;     // play a console UI sound N times during the hold, 0 = off
+__attribute_data__ u32 preboot_sound_effect = 0x0b; // which one (IPL sound effect id), default the cursor tick
+extern void (*Jac_PlaySe)(u32);                     // the IPL's sound effect player (reloc, see menu.c)
 __attribute_data__ u64 completed_time = 0;
 
 // used to start game
@@ -399,11 +402,24 @@ __attribute_used__ void pre_menu_init(int unk) {
     // field every register is put back as the IPL left it. See preboot_signal_begin().
     const u32 fields_per_sec = rmode->viTVMode >> 2 == VI_NTSC ? 60 : 50;
     const u32 total_frames = ((u64)preboot_delay_ms * fields_per_sec) / 1000;
+    //
+    // Some TVs also keep their speakers muted on a cold start until they hear real sound,
+    // then take a few seconds to unmute -- so the start of the animation's sound is lost
+    // however long the hold is (silence doesn't wake them, and the IPL's sound system is
+    // already running here, streaming silence). preboot_sound_ticks plays one of the
+    // IPL's own UI sounds N times spread across the hold, through its own sound player,
+    // so the TV has unmuted before the animation's sound starts.
     bool holding_picture = false;
+    const u32 sound_effect = preboot_sound_effect ? preboot_sound_effect : 0x0b;
+    u32 tick_interval = preboot_sound_ticks ? total_frames / preboot_sound_ticks : 0;
+    if (tick_interval == 1) tick_interval = 2; // more ticks than fields: every other field
     for (u32 i = 0; i < total_frames; i++) {
         VIWaitForRetrace();
         if (i == 1) {
             holding_picture = preboot_signal_begin(rmode->viTVMode, rmode->viHeight, rmode->viYOrigin);
+        }
+        if (tick_interval && i % tick_interval == 1) {
+            Jac_PlaySe(sound_effect);
         }
     }
     if (holding_picture) {

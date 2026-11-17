@@ -19,6 +19,8 @@ menu_start_color = ff2d55       # hex color code
 cube_logo = /logo.raw           # your art instead of the "GAMECUBE" boot text (raw RGBA8 352x40)
 preboot_delay_ms = 3000         # wait before the boot animation, in milliseconds
 postboot_delay_ms = 2000        # hold the last frame before the game boots
+preboot_sound_ticks = 2         # play a menu sound N times during the preboot hold (wakes a muted TV)
+preboot_sound_effect = tick     # which: tick | menu_enter | menu_exit | submenu_enter | submenu_exit
 force_widescreen = on           # render the menu anamorphic for a 16:9 TV
 force_progressive = on          # menu in 480p -- IPL 1.1/1.2 only, no-op on IPL 1.0
 swiss_on_dvd_boot = off         # boot physical discs with the console instead of Swiss
@@ -104,9 +106,28 @@ How it works, and how it interacts with `default_folder`:
 ## `preboot_delay_ms` and `postboot_delay_ms`
 
 Both in milliseconds, both `0` by default. `preboot_delay_ms` waits before the boot
-animation, holding a live video signal, so a TV or GCVideo has time to lock on before the
-animation starts. `postboot_delay_ms` holds the last frame after picking a game, before it
-boots.
+animation, showing a solid black picture, so a TV or GCVideo has time to lock on before the
+animation starts. (The IPL itself keeps the screen blanked -- no picture at all -- until the
+animation's first frame, which an HDMI adapter treats as no signal; the wait switches a real
+black picture on for its length.) `postboot_delay_ms` holds the last frame after picking a
+game, before it boots.
+
+The loader also keeps the screen blanked while it works, so the TV sees one signal, the
+black hold, instead of a brief loader picture that drops out again when the IPL resets the
+video. Error and crash screens still switch the picture on.
+
+## `preboot_sound_ticks` and `preboot_sound_effect`
+
+Some TVs keep their speakers muted on a cold start until they hear real sound, then take a
+few seconds to unmute, so the start of the boot animation's sound is cut off however long
+`preboot_delay_ms` is. `preboot_sound_ticks` plays one of the console's own menu sounds that
+many times, spread evenly across the `preboot_delay_ms` hold, so the TV has unmuted before
+the animation's sound starts. `0` (default) is off, at most `20`. On a cold start the TV
+usually swallows the first one; with `2`, the second plays halfway through the hold, well
+clear of the animation.
+
+`preboot_sound_effect` picks the sound: `tick` (default, the cursor tick), `menu_enter`,
+`menu_exit`, `submenu_enter` or `submenu_exit`.
 
 ## `text_scroll`
 

@@ -21,6 +21,8 @@ typedef struct settings {
     u32 force_widescreen;
     u32 preboot_delay_ms;
     u32 postboot_delay_ms;
+    u32 preboot_sound_ticks;  // console UI sound N times during the preboot hold, 0 = off
+    u32 preboot_sound_effect; // which UI sound (IPL sound effect id)
     // Auto-scroll of long texts in the game list. A number in the ini is the delay in
     // seconds before scrolling starts, so 0/1 are NOT the usual switch values here.
     u32 text_scroll_enabled;

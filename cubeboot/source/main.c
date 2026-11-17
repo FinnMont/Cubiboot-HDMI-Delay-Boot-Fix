@@ -121,7 +121,11 @@ int main(int argc, char **argv) {
 	VIDEO_Configure(rmode);
 	VIDEO_SetNextFramebuffer(xfb);
     VIDEO_ClearFrameBuffer(rmode, xfb, COLOR_BLACK);
-	VIDEO_SetBlack(FALSE);
+	// Keep the screen blanked: the loader shows nothing, and a picture here would only
+	// make a TV / HDMI adapter lock on and then lose the signal again when the IPL resets
+	// the video a moment later. Error and crash screens switch the picture on themselves
+	// (see halt.c).
+	VIDEO_SetBlack(TRUE);
 	VIDEO_Flush();
 	VIDEO_WaitVSync();
     if (rmode->viTVMode & VI_NON_INTERLACE) {
@@ -323,6 +327,8 @@ int main(int argc, char **argv) {
 
     set_patch_value(symshdr, syment, symstringdata, "preboot_delay_ms", settings.preboot_delay_ms);
     set_patch_value(symshdr, syment, symstringdata, "postboot_delay_ms", settings.postboot_delay_ms);
+    set_patch_value(symshdr, syment, symstringdata, "preboot_sound_ticks", settings.preboot_sound_ticks);
+    set_patch_value(symshdr, syment, symstringdata, "preboot_sound_effect", settings.preboot_sound_effect);
 
     set_patch_value(symshdr, syment, symstringdata, "text_scroll_enabled", settings.text_scroll_enabled);
     set_patch_value(symshdr, syment, symstringdata, "text_scroll_delay_s", settings.text_scroll_delay_s);

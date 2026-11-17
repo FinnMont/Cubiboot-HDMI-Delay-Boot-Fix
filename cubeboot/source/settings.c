@@ -190,6 +190,43 @@ void load_settings() {
         settings.postboot_delay_ms = postboot_delay_ms;
     }
 
+    // a console UI sound played N times during the preboot hold, so a TV that only
+    // unmutes a few seconds after it first hears sound is ready for the boot animation
+    u32 preboot_sound_ticks = 0;
+    if (!ini_sget(conf, "cubeboot", "preboot_sound_ticks", "%u", &preboot_sound_ticks)) {
+        settings.preboot_sound_ticks = 0;
+    } else {
+        if (preboot_sound_ticks > 20) preboot_sound_ticks = 20;
+        iprintf("Found preboot_sound_ticks = %u\n", preboot_sound_ticks);
+        settings.preboot_sound_ticks = preboot_sound_ticks;
+    }
+
+    // which UI sound -- only the IPL menu sounds cubiboot already uses
+    static const struct { const char *name; u32 id; } preboot_sounds[] = {
+        { "tick",          0x0b }, // cursor move
+        { "menu_enter",    0x05 },
+        { "menu_exit",     0x06 },
+        { "submenu_enter", 0x0c },
+        { "submenu_exit",  0x07 },
+    };
+    settings.preboot_sound_effect = preboot_sounds[0].id;
+    const char *preboot_sound_raw = ini_get(conf, "cubeboot", "preboot_sound_effect");
+    if (preboot_sound_raw != NULL) {
+        bool found = false;
+        for (u32 i = 0; i < sizeof(preboot_sounds) / sizeof(preboot_sounds[0]); i++) {
+            if (strcmp(preboot_sound_raw, preboot_sounds[i].name) == 0) {
+                settings.preboot_sound_effect = preboot_sounds[i].id;
+                found = true;
+                break;
+            }
+        }
+        if (found) {
+            iprintf("Found preboot_sound_effect = %s\n", preboot_sound_raw);
+        } else {
+            iprintf("Unknown preboot_sound_effect = %s, using tick\n", preboot_sound_raw);
+        }
+    }
+
     // Auto-scroll of long menu texts. Not ini_get_bool on purpose: a number here is the
     // delay in seconds before a long title starts scrolling, so `0` and `1` mean seconds,
     // not off/on. `on`/`yes`/`true` keep the default delay; `off`/`no`/`false` disable it.
