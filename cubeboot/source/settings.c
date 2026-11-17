@@ -200,6 +200,16 @@ void load_settings() {
         settings.preboot_sound_volume = preboot_sound_volume;
     }
 
+    // the console's own cursor tick, N times spread across the preboot hold
+    u32 preboot_sound_ticks = 0;
+    if (!ini_sget(conf, "cubeboot", "preboot_sound_ticks", "%u", &preboot_sound_ticks)) {
+        settings.preboot_sound_ticks = 0;
+    } else {
+        if (preboot_sound_ticks > 20) preboot_sound_ticks = 20;
+        iprintf("Found preboot_sound_ticks = %u\n", preboot_sound_ticks);
+        settings.preboot_sound_ticks = preboot_sound_ticks;
+    }
+
     // Auto-scroll of long menu texts. Not ini_get_bool on purpose: a number here is the
     // delay in seconds before a long title starts scrolling, so `0` and `1` mean seconds,
     // not off/on. `on`/`yes`/`true` keep the default delay; `off`/`no`/`false` disable it.

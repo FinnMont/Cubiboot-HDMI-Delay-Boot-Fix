@@ -60,6 +60,8 @@ __attribute_data__ static int fix_pal_ntsc = 0;
 __attribute_data__ u32 preboot_delay_ms = 0;
 __attribute_data__ u32 postboot_delay_ms = 0;
 __attribute_data__ u32 preboot_sound_volume = 0; // faint sound during the preboot hold, 0 = off
+__attribute_data__ u32 preboot_sound_ticks = 0;  // console's cursor tick N times during the hold, 0 = off
+extern void (*Jac_PlaySe)(u32);                   // the IPL's sound effect player (reloc, see menu.c)
 __attribute_data__ u64 completed_time = 0;
 
 // used to start game
@@ -402,31 +404,25 @@ __attribute_used__ void pre_menu_init(int unk) {
     const u32 fields_per_sec = rmode->viTVMode >> 2 == VI_NTSC ? 60 : 50;
     const u32 total_frames = ((u64)preboot_delay_ms * fields_per_sec) / 1000;
     //
-    // With preboot_sound_volume set, the hold also plays a faint sound, so a TV that only
-    // unmutes a few seconds after it first hears sound has done so before the animation's
-    // own sound starts. See preboot_sound_begin().
+    // Some TVs keep their speakers muted on a cold start until they hear real sound, then
+    // take a few seconds to unmute, so the start of the animation's sound is lost however
+    // long the hold is. Two ways to give them something to hear during the hold:
+    //  - preboot_sound_ticks: the IPL's own soft cursor tick, N times spread across the
+    //    hold, through the IPL's own sound player (its sound system is already running).
+    //  - preboot_sound_volume: a faint hiss straight from the audio DMA, only used when
+    //    nothing else owns the audio yet -- see preboot_sound_begin().
     bool holding_picture = false;
     bool playing_sound = false;
+    u32 tick_interval = preboot_sound_ticks ? total_frames / preboot_sound_ticks : 0;
+    if (tick_interval == 1) tick_interval = 2; // more ticks than fields: tick every other field
     for (u32 i = 0; i < total_frames; i++) {
         VIWaitForRetrace();
         if (i == 1) {
             holding_picture = preboot_signal_begin(rmode->viTVMode, rmode->viHeight, rmode->viYOrigin);
-            int sound_status = preboot_sound_begin(preboot_sound_volume);
-            playing_sound = (sound_status == PREBOOT_SOUND_PLAYING);
-
-            // DIAGNOSTIC BUILD: tint the held picture to show what the sound code did.
-            // grey = volume 0 / not set, blue = playing, red = audio DMA already running,
-            // green = audio DMA interrupt already in use, magenta = DMA never advanced.
-            static const u32 status_color[] = {
-                [PREBOOT_SOUND_OFF]           = 0x3C803C80, // grey
-                [PREBOOT_SOUND_PLAYING]       = 0x29F0296E, // blue
-                [PREBOOT_SOUND_DMA_BUSY]      = 0x515A51F0, // red
-                [PREBOOT_SOUND_IRQ_BUSY]      = 0x91369122, // green
-                [PREBOOT_SOUND_NOT_ADVANCING] = 0x6ACA6ADE, // magenta
-            };
-            if (sound_status >= 0 && sound_status <= PREBOOT_SOUND_NOT_ADVANCING) {
-                preboot_signal_set_color(status_color[sound_status]);
-            }
+            playing_sound = preboot_sound_begin(preboot_sound_volume) == PREBOOT_SOUND_PLAYING;
+        }
+        if (tick_interval && i % tick_interval == 1) {
+            Jac_PlaySe(SOUND_CARD_MOVE);
         }
     }
     if (playing_sound) {
