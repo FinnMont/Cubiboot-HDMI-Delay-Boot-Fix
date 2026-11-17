@@ -323,6 +323,7 @@ int main(int argc, char **argv) {
 
     set_patch_value(symshdr, syment, symstringdata, "preboot_delay_ms", settings.preboot_delay_ms);
     set_patch_value(symshdr, syment, symstringdata, "postboot_delay_ms", settings.postboot_delay_ms);
+    set_patch_value(symshdr, syment, symstringdata, "preboot_sound_volume", settings.preboot_sound_volume);
 
     set_patch_value(symshdr, syment, symstringdata, "text_scroll_enabled", settings.text_scroll_enabled);
     set_patch_value(symshdr, syment, symstringdata, "text_scroll_delay_s", settings.text_scroll_delay_s);

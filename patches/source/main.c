@@ -23,6 +23,7 @@
 #include "emu/drive_probe.h"
 
 #include "video.h"
+#include "preboot_sound.h"
 #include "dol.h"
 #include "boot.h"
 #include "gameid.h"
@@ -58,6 +59,7 @@ __attribute_data__ static int fix_pal_ntsc = 0;
 // used for optional delays
 __attribute_data__ u32 preboot_delay_ms = 0;
 __attribute_data__ u32 postboot_delay_ms = 0;
+__attribute_data__ u32 preboot_sound_volume = 0; // faint sound during the preboot hold, 0 = off
 __attribute_data__ u64 completed_time = 0;
 
 // used to start game
@@ -399,12 +401,22 @@ __attribute_used__ void pre_menu_init(int unk) {
     // field every register is put back as the IPL left it. See preboot_signal_begin().
     const u32 fields_per_sec = rmode->viTVMode >> 2 == VI_NTSC ? 60 : 50;
     const u32 total_frames = ((u64)preboot_delay_ms * fields_per_sec) / 1000;
+    //
+    // With preboot_sound_volume set, the hold also plays a faint sound, so a TV that only
+    // unmutes a few seconds after it first hears sound has done so before the animation's
+    // own sound starts. See preboot_sound_begin().
     bool holding_picture = false;
+    bool playing_sound = false;
     for (u32 i = 0; i < total_frames; i++) {
         VIWaitForRetrace();
         if (i == 1) {
             holding_picture = preboot_signal_begin(rmode->viTVMode, rmode->viHeight, rmode->viYOrigin);
+            playing_sound = preboot_sound_begin(preboot_sound_volume);
         }
+    }
+    if (playing_sound) {
+        // Silence it and hand the audio hardware back before the IPL sets up its own.
+        preboot_sound_end();
     }
     if (holding_picture) {
         // Still right after the last retrace: back to the IPL's own (blanked) state.

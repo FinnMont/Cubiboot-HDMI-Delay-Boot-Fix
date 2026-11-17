@@ -190,6 +190,16 @@ void load_settings() {
         settings.postboot_delay_ms = postboot_delay_ms;
     }
 
+    // faint sound during the preboot hold, so a TV that unmutes late is ready for the animation
+    u32 preboot_sound_volume = 0;
+    if (!ini_sget(conf, "cubeboot", "preboot_sound_volume", "%u", &preboot_sound_volume)) {
+        settings.preboot_sound_volume = 0;
+    } else {
+        if (preboot_sound_volume > 100) preboot_sound_volume = 100;
+        iprintf("Found preboot_sound_volume = %u\n", preboot_sound_volume);
+        settings.preboot_sound_volume = preboot_sound_volume;
+    }
+
     // Auto-scroll of long menu texts. Not ini_get_bool on purpose: a number here is the
     // delay in seconds before a long title starts scrolling, so `0` and `1` mean seconds,
     // not off/on. `on`/`yes`/`true` keep the default delay; `off`/`no`/`false` disable it.
