@@ -23,10 +23,7 @@
 
 extern GXRModeObj *rmode;
 extern void *xfb;
-extern u32 console_tv_mode;
 extern GXRModeObj *loader_interlaced_mode;
-extern bool loader_video_is_progressive(void);
-extern void loader_set_video(GXRModeObj *mode);
 
 #define IPL_ROM_FONT_SJIS	0x1AFF00
 #define DECRYPT_START		0x100
@@ -93,16 +90,21 @@ void post_ipl_loaded() {
     current_bios = &bios_table[bios_index];
     iprintf("IPL %s loaded...\n", current_bios->name);
 
-    // The console's own format, not the loader's current mode: the loader may already be
-    // in (NTSC) 480p, see main.c.
-    if (current_bios->type == IPL_PAL && console_tv_mode == VI_NTSC) {
+    if (current_bios->type == IPL_PAL && VIDEO_GetCurrentTvMode() == VI_NTSC) {
         iprintf("Switching to VI to PAL\n");
-        // This IPL wants PAL video. In 480p, stay there for now: main.c settles the
-        // picture once it knows whether force_progressive is in use.
-        loader_interlaced_mode = current_bios->version == IPL_PAL_11 ? &TVPal528IntDf : &TVMpal480IntDf;
-        if (!loader_video_is_progressive()) {
-            loader_set_video(loader_interlaced_mode);
+        if (current_bios->version == IPL_PAL_11) {
+            rmode = &TVPal528IntDf;
+        } else {
+            rmode = &TVMpal480IntDf;
         }
+        VIDEO_Configure(rmode);
+        VIDEO_SetNextFramebuffer(xfb);
+        VIDEO_ClearFrameBuffer(rmode, xfb, COLOR_BLACK);
+        VIDEO_SetBlack(FALSE); // picture on, like the loader's own setup in main.c
+        VIDEO_Flush();
+        VIDEO_WaitVSync();
+        if(rmode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
+        loader_interlaced_mode = rmode; // this IPL's mode now (see main.c)
     }
 }
 

@@ -59,22 +59,15 @@ extern const void _end;
 void *xfb;
 GXRModeObj *rmode;
 
-// The loader's picture. It starts in 480p whenever the console can output it (a digital
-// or component cable), because with force_progressive the boot animation -- and the
-// preboot hold before it -- run in 480p too, so an HDMI adapter and TV see that mode
-// from the loader's very first frame instead of switching to it later. The setting
-// itself is only known once config.ini has been read; if it turns out to be off (or the
-// IPL can't do progressive), the loader switches to the console's interlaced mode then.
-u32 console_tv_mode;                     // the console's own TV format, before any switch
-GXRModeObj *loader_interlaced_mode;      // its interlaced mode, for when 480p isn't wanted
-static GXRModeObj loader_progressive_mode;
+// The loader's picture runs at 60 Hz on a PAL console with a digital or component cable:
+// 480i at 60 Hz (EURGB60, the mode PAL games use for 60 Hz) instead of the usual 50 Hz.
+// With force_progressive the boot animation and the preboot hold run in 480p at 60 Hz, so
+// the TV then only has to go from 480i to 480p at the start of the hold, not from 50 Hz to
+// 60 Hz as well. It stays interlaced because the IPL has to be handed interlaced video --
+// it can't start from 480p. Once config.ini is read, a console without force_progressive
+// goes back to its normal 50 Hz picture, which is what its IPL will use.
+GXRModeObj *loader_interlaced_mode; // the mode the IPL will use when not progressive
 
-bool loader_video_is_progressive(void) {
-    return rmode != NULL && (rmode->viTVMode & 0x03) == VI_PROGRESSIVE;
-}
-
-// Switch the loader's black picture to another mode. The framebuffer is cleared to black
-// before the picture switches over, so nothing else ever shows.
 void loader_set_video(GXRModeObj *mode) {
     rmode = mode;
     VIDEO_Configure(rmode);
@@ -127,7 +120,6 @@ int main(int argc, char **argv) {
     // rmode = VIDEO_GetPreferredMode(NULL);
     // rmode = &TVNtsc480IntDf;
     u32 tvmode = VIDEO_GetCurrentTvMode();
-    console_tv_mode = tvmode;
     switch (tvmode) {
         case VI_NTSC:
             rmode = &TVNtsc480IntDf;
@@ -143,19 +135,8 @@ int main(int argc, char **argv) {
             break;
     }
     loader_interlaced_mode = rmode;
-
-    // 480p as the IPL runs it with force_progressive: 640x448, same position (see
-    // pre_main in the patches; an NTSC IPL keeps its own size, which can differ by a few
-    // lines and then costs a quick re-sync when the preboot hold starts).
-    loader_progressive_mode = TVNtsc480Prog;
-    loader_progressive_mode.efbHeight = 448;
-    loader_progressive_mode.xfbHeight = 448;
-    loader_progressive_mode.viXOrigin = 40;
-    loader_progressive_mode.viYOrigin = 16;
-    loader_progressive_mode.viWidth = 640;
-    loader_progressive_mode.viHeight = 448;
-    if (VIDEO_HaveComponentCable()) {
-        rmode = &loader_progressive_mode;
+    if (tvmode == VI_PAL && VIDEO_HaveComponentCable()) {
+        rmode = &TVEurgb60Hz480IntDf; // see loader_interlaced_mode
     }
     xfb = MEM_K0_TO_K1(ROUND_UP_1K(get_symbol_value(symshdr, syment, symstringdata, "_patches_end"))); // above patches, below stack
 #ifdef CONSOLE_ENABLE
@@ -170,7 +151,7 @@ int main(int argc, char **argv) {
 	VIDEO_SetBlack(FALSE);
 	VIDEO_Flush();
 	VIDEO_WaitVSync();
-    if ((rmode->viTVMode & 0x03) != VI_INTERLACE) {
+    if (rmode->viTVMode & VI_NON_INTERLACE) {
         VIDEO_WaitVSync();
     }
     else {
@@ -239,12 +220,9 @@ int main(int argc, char **argv) {
     }
 
 #ifdef VIDEO_ENABLE
-    // Now that config.ini is read and the IPL is known, settle the loader's picture on the
-    // mode the boot animation will use, if it isn't there already: 480p with
-    // force_progressive, the console's interlaced mode without (see loader_set_video).
-    if (settings.progressive_enabled && !loader_video_is_progressive()) {
-        loader_set_video(&loader_progressive_mode);
-    } else if (!settings.progressive_enabled && loader_video_is_progressive()) {
+    // Without force_progressive, back to the picture the IPL will use (see
+    // loader_interlaced_mode).
+    if (!settings.progressive_enabled && rmode != loader_interlaced_mode) {
         loader_set_video(loader_interlaced_mode);
     }
 #endif
