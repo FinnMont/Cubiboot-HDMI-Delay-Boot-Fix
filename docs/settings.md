@@ -114,16 +114,15 @@ game, before it boots.
 
 The black picture has exactly the size and position of the animation's picture and carries
 straight on into it, so the TV locks on once, at the start of the wait, and doesn't have to
-re-sync when the animation begins. If the TV does have to lock on again when the wait
-starts, that takes it about a second, which comes out of the wait. `2000` is a good starting
-point. If the console isn't in the animation's video mode yet when the wait starts, the wait
-still happens but without the picture.
+re-sync when the animation begins. Locking on takes a TV about a second -- longer when it
+also has to change resolution, as it does with `force_progressive` (the console starts up in
+interlaced) -- and that much of the wait is spent on it. `2000` is a good starting point. If
+the console isn't in the animation's video mode yet when the wait starts, the wait still
+happens but without the picture.
 
 The loader shows a black picture while it works, which an HDMI adapter shows as a brief
 flash at power-on. It is left on deliberately: with it blanked, some TVs unmute late on a
-cold start and cut off the start of the animation's sound. With `force_progressive`, the
-loader switches that picture to the animation's 480p as soon as it knows the setting is in
-use, so the TV changes resolution once, early, rather than at the start of the wait.
+cold start and cut off the start of the animation's sound.
 
 ## `preboot_sound_ticks` and `preboot_sound_effect`
 
