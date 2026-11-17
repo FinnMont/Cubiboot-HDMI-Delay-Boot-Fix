@@ -121,11 +121,10 @@ int main(int argc, char **argv) {
 	VIDEO_Configure(rmode);
 	VIDEO_SetNextFramebuffer(xfb);
     VIDEO_ClearFrameBuffer(rmode, xfb, COLOR_BLACK);
-	// Keep the screen blanked: the loader shows nothing, and a picture here would only
-	// make a TV / HDMI adapter lock on and then lose the signal again when the IPL resets
-	// the video a moment later. Error and crash screens switch the picture on themselves
-	// (see halt.c).
-	VIDEO_SetBlack(TRUE);
+	// Show the (black) picture while the loader works. It costs a brief flash on an HDMI
+	// adapter, but keeping it blanked made some TVs unmute late on a cold start, cutting
+	// off the start of the boot animation's sound even with preboot_sound_ticks.
+	VIDEO_SetBlack(FALSE);
 	VIDEO_Flush();
 	VIDEO_WaitVSync();
     if (rmode->viTVMode & VI_NON_INTERLACE) {
@@ -195,6 +194,37 @@ int main(int argc, char **argv) {
     if (current_bios->version == IPL_NTSC_10) {
         settings.progressive_enabled = FALSE;
     }
+
+#ifdef VIDEO_ENABLE
+    // With force_progressive the boot animation -- and the preboot hold before it -- runs
+    // in 480p, as 640x448 (see pre_main in the patches). Switch the loader's black picture
+    // to that same mode now, so an HDMI adapter and TV change resolution once, here, while
+    // the loader is still busy, instead of at the start of the hold, where the switch eats
+    // into it. With the console already in the animation's mode when the IPL takes over,
+    // the picture can also carry on through the IPL's own video setup. The size and
+    // position match what pre_main gives a PAL IPL exactly; an NTSC IPL keeps its own,
+    // which can differ by a few lines and then costs a quick re-sync when the hold starts.
+    // Done only now that the IPL is known, since IPL 1.0 can't do progressive.
+    if (settings.progressive_enabled) {
+        static GXRModeObj loader_progressive_mode;
+        loader_progressive_mode = TVNtsc480Prog;
+        loader_progressive_mode.efbHeight = 448;
+        loader_progressive_mode.xfbHeight = 448;
+        loader_progressive_mode.viXOrigin = 40;
+        loader_progressive_mode.viYOrigin = 16;
+        loader_progressive_mode.viWidth = 640;
+        loader_progressive_mode.viHeight = 448;
+        rmode = &loader_progressive_mode;
+
+        VIDEO_Configure(rmode);
+        VIDEO_SetNextFramebuffer(xfb);
+        VIDEO_ClearFrameBuffer(rmode, xfb, COLOR_BLACK);
+        VIDEO_SetBlack(FALSE);
+        VIDEO_Flush();
+        VIDEO_WaitVSync();
+        VIDEO_WaitVSync();
+    }
+#endif
 
 //// elf world pt2
 

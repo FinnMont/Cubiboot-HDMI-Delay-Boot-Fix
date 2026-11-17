@@ -18,8 +18,9 @@ static void *exception_xfb = (void*)0xC1700000;
 extern void VIDEO_SetFramebuffer(void *);
 #endif
 
-// The loader keeps the screen blanked (see main.c), so anything that shows a message has
-// to switch the picture on first. This does it by writing the VI registers directly, so it
+// The screen can be blanked when a message needs showing (libogc starts out blanked, and a
+// crash can come before the loader switches its picture on), so anything that shows a
+// message switches the picture on first. This does it by writing the VI registers directly, so it
 // also works with interrupts off (exception handlers), where VIDEO_SetBlack()/VIDEO_Flush()
 // would only take effect at the next retrace interrupt. It is the inverse of libogc's
 // blanking (__setVerticalRegs): blanking moves a field's active lines into its pre- and
@@ -59,7 +60,7 @@ void __wrap_c_default_exceptionhandler(frame_context *ctx) {
 }
 
 void prog_halt(char *msg) {
-    // the screen is blanked during the loader: switch it on so the message shows
+    // make sure the picture is on so the message shows
     if (rmode != NULL) {
         VIDEO_SetBlack(FALSE);
         VIDEO_Flush();
