@@ -398,8 +398,9 @@ __attribute_used__ void pre_menu_init(int unk) {
     // picture at all -- so a GCVideo-based HDMI adapter has nothing to lock onto and the
     // TV only starts syncing once the animation is already playing. So after the first
     // couple of fields (letting the IPL's own video setup reach the hardware) the wait
-    // shows a real, solid black picture in the IPL's own mode, and right after the last
-    // field every register is put back as the IPL left it. See preboot_signal_begin().
+    // shows a real, solid black picture in exactly the size and position the IPL will
+    // use, and hands that picture straight over to the animation, so the TV never has
+    // to re-sync in between. See preboot_signal_begin().
     const u32 fields_per_sec = rmode->viTVMode >> 2 == VI_NTSC ? 60 : 50;
     const u32 total_frames = ((u64)preboot_delay_ms * fields_per_sec) / 1000;
     //
@@ -416,14 +417,13 @@ __attribute_used__ void pre_menu_init(int unk) {
     for (u32 i = 0; i < total_frames; i++) {
         VIWaitForRetrace();
         if (i == 1) {
-            holding_picture = preboot_signal_begin(rmode->viTVMode, rmode->viHeight, rmode->viYOrigin);
+            holding_picture = preboot_signal_begin(rmode->viTVMode, rmode->viHeight);
         }
         if (tick_interval && i % tick_interval == 1) {
             Jac_PlaySe(sound_effect);
         }
     }
     if (holding_picture) {
-        // Still right after the last retrace: back to the IPL's own (blanked) state.
         preboot_signal_end();
     }
 }

@@ -112,9 +112,18 @@ animation's first frame, which an HDMI adapter treats as no signal; the wait swi
 black picture on for its length.) `postboot_delay_ms` holds the last frame after picking a
 game, before it boots.
 
-The loader also keeps the screen blanked while it works, so the TV sees one signal, the
-black hold, instead of a brief loader picture that drops out again when the IPL resets the
-video. Error and crash screens still switch the picture on.
+The black picture has exactly the size and position of the animation's picture and carries
+straight on into it, so the TV locks on once, at the start of the wait, and doesn't have to
+re-sync when the animation begins. Locking on takes a TV about a second -- longer when it
+also has to change resolution, as it does with `force_progressive` (the console starts up in
+interlaced) -- and that much of the wait is spent on it, so `2000` leaves well under a second
+of black before the animation. A TV that also needs `preboot_sound_ticks` on a cold start
+wants about `4000`. If the console isn't in the animation's video mode yet when the wait
+starts, the wait still happens but without the picture.
+
+The loader also keeps the screen blanked while it works, so the TV isn't shown a brief
+loader picture that drops out again a moment later. Error and crash screens still switch
+the picture on.
 
 ## `preboot_sound_ticks` and `preboot_sound_effect`
 
@@ -122,9 +131,10 @@ Some TVs keep their speakers muted on a cold start until they hear real sound, t
 few seconds to unmute, so the start of the boot animation's sound is cut off however long
 `preboot_delay_ms` is. `preboot_sound_ticks` plays one of the console's own menu sounds that
 many times, spread evenly across the `preboot_delay_ms` hold, so the TV has unmuted before
-the animation's sound starts. `0` (default) is off, at most `20`. On a cold start the TV
-usually swallows the first one; with `2`, the second plays halfway through the hold, well
-clear of the animation.
+the animation's sound starts. `0` (default) is off, at most `20`. The first one plays as the
+hold starts, while the TV is still locking on, so it's usually swallowed; the rest are what
+wake the TV, and the TV then needs a couple of seconds to unmute. `preboot_delay_ms = 4000`
+with `3` ticks plays them about 1.3 s apart, the last well clear of the animation.
 
 `preboot_sound_effect` picks the sound: `tick` (default, the cursor tick), `menu_enter`,
 `menu_exit`, `submenu_enter` or `submenu_exit`.

@@ -210,23 +210,38 @@ void ogc__VIInit(u32 vimode) {
 // Live black picture during preboot_delay_ms
 //
 // The IPL keeps the screen blanked (VISetBlack) until the first frame of the boot
-// animation. Blanking works by programming zero active lines into VTR and moving
-// them into the pre/post-blanking counts, so the digital AV port carries no picture
-// at all and a GCVideo-based HDMI adapter has no mode to lock onto. The adapter and
-// TV then only start syncing once the animation is already playing, and the start
-// of it is lost -- which is exactly what preboot_delay_ms is meant to prevent.
+// animation. Blanking programs zero active lines into VTR and moves them into the
+// pre/post-blanking counts, so the digital AV port carries no picture at all and a
+// GCVideo-based HDMI adapter has no mode to lock onto. The adapter and TV then only
+// start syncing once the animation is already playing, and the start of it is lost --
+// which is exactly what preboot_delay_ms is meant to prevent.
 //
-// So for the length of the delay we un-blank the VI ourselves: same mode and same
-// total field length as the IPL programmed, but with real active lines, scanning a
-// single line of solid black from our own memory (stride 0, so every line of the
-// field reads the same 2 KiB). Nothing in RAM that belongs to the IPL is touched.
-// preboot_signal_end() then puts every register back exactly as the IPL left it,
-// so from there the boot carries on as if we had never been here. This all runs
-// inside pre_menu_init, while the IPL's own main loop is waiting on us, so nothing
-// else programs the VI in between.
+// So for the length of the delay we un-blank the VI ourselves, in the exact picture
+// size and position the IPL will un-blank to when the animation starts. That part
+// matters: GCVideo times its output from where the console's picture starts and how
+// tall it is, so if our picture and the IPL's differ even by a line, the TV loses the
+// signal and re-syncs just as the animation begins. The size and position come
+// straight from the registers the IPL programmed, by undoing its blanking: Nintendo's
+// SDK moves all but one of the active lines into pre-blanking and the last one into
+// post-blanking; current libogc2 splits them evenly. Both are recognised.
 //
-// Register layout and the blanking arithmetic follow libogc's video.c
-// (__setVerticalRegs, __setFbbRegs, __setPicConfig).
+// The black itself comes one of two ways:
+//  - Handover (normal case): the IPL's own framebuffer is cleared to black and the VI
+//    keeps scanning it. preboot_signal_end() then touches nothing at all -- the
+//    picture stays on, already in the IPL's size and position, and when the IPL
+//    un-blanks for the animation it writes the very values that are already there.
+//    The signal never changes from the start of the hold into the animation.
+//  - Fallback, if the framebuffer the VI points at isn't plainly the IPL's (outside
+//    MEM1, or in memory Cubiboot uses): scan one line of black from our own memory
+//    (stride 0, so every line reads the same 2 KiB), and at the end put every register
+//    back exactly as the IPL left it.
+//
+// Timing registers are only ever written in the first few lines of a field, before
+// its picture starts, so no field is half old values and half new.
+//
+// This all runs inside pre_menu_init, while the IPL's own main loop is waiting on us,
+// so nothing else programs the VI in between. Register layout and the blanking
+// arithmetic follow libogc's video.c (__setVerticalRegs, __setFbbRegs, __setPicConfig).
 // ---------------------------------------------------------------------------------
 
 #define VI_YUV_BLACK 0x10801080 // Y=16 Cb=128 Y=16 Cr=128
@@ -241,6 +256,7 @@ void ogc__VIInit(u32 vimode) {
 #define VIREG_TFBL_LO  15
 #define VIREG_BFBL_HI  18
 #define VIREG_BFBL_LO  19
+#define VIREG_VCT      22 // line of the frame the VI is on now, counting from 1
 #define VIREG_PICCONF  36 // (words per line << 8) | stride
 
 static const u8 preboot_regs[] = {
@@ -252,6 +268,8 @@ static const u8 preboot_regs[] = {
 static u32 preboot_black_line[512] __attribute__((aligned(32))); // 2 KiB: up to 64 words per line
 static u16 preboot_saved[PREBOOT_NREGS];
 static bool preboot_active = false;
+static bool preboot_handover = false;
+static const struct _timing *preboot_timing = NULL;
 
 static void preboot_flush_dcache(void *ptr, u32 len) {
 	u32 addr = (u32)ptr & ~31;
@@ -262,13 +280,83 @@ static void preboot_flush_dcache(void *ptr, u32 len) {
 	asm volatile("sync" : : : "memory");
 }
 
+static inline u32 preboot_irq_disable(void) {
+	u32 msr;
+	asm volatile("mfmsr %0" : "=r"(msr));
+	asm volatile("mtmsr %0" : : "r"(msr & ~0x8000) : "memory"); // clear EE
+	return msr;
+}
+
+static inline void preboot_irq_restore(u32 msr) {
+	asm volatile("mtmsr %0" : : "r"(msr) : "memory");
+}
+
+// Is the VI in the first few lines of a field -- vertical sync and equalisation, well
+// before the picture? The line counter runs over the whole frame from 1; an interlaced
+// frame's second field starts halfway through (nhlines counts half-lines per field), on
+// a line it shares with the end of the first, which is skipped. A progressive frame is
+// one field, so its "halfway" line is past the end and never matches.
+static bool preboot_in_field_start(void) {
+	const u16 window = 6; // lines; the picture never starts before ~20 lines in
+	const u16 second = (preboot_timing->nhlines / 2) + 1;
+	u16 line = _viReg[VIREG_VCT] & 0x7ff;
+	return (line >= 1 && line < 1 + window) || (line > second && line < second + window);
+}
+
+// Busy-waits for the start of a field, so registers written next apply to the whole of
+// it, and returns with interrupts off so nothing can delay those writes past it (hand
+// *msr to preboot_irq_restore afterwards). Returns false, interrupts untouched, after
+// roughly two fields without catching one.
+static bool preboot_wait_field_start(u32 *msr) {
+	for (u32 n = 0; n < 400000; n++) {
+		if (!preboot_in_field_start()) continue;
+		*msr = preboot_irq_disable();
+		if (preboot_in_field_start()) return true;
+		preboot_irq_restore(*msr);
+	}
+	return false;
+}
+
+static u32 preboot_fb_phys(u16 hi, u16 lo, bool poff) {
+	u32 addr = ((u32)(hi & 0xff) << 16) | lo;
+	return poff ? (addr << 5) : addr;
+}
+
+// The memory the VI scans for both fields with the IPL's framebuffer settings, if it is
+// plainly RAM the IPL owns: inside MEM1, above the OS globals, and clear of Cubiboot's
+// own memory (its low-memory block, and the patches plus the loader's framebuffer from
+// 0x81600000 up).
+static bool preboot_ipl_fb_region(u32 lines, u32 *start, u32 *len) {
+	bool poff = (preboot_saved[5] >> 12) & 1;
+	u32 top = preboot_fb_phys(preboot_saved[5], preboot_saved[6], poff);
+	u32 bottom = preboot_fb_phys(preboot_saved[7], preboot_saved[8], poff);
+	u32 wpl = (preboot_saved[9] >> 8) & 0x7f;
+	u32 stride = preboot_saved[9] & 0xff;
+	if (wpl == 0 || stride < wpl) return false;
+
+	// one field: (lines - 1) strides plus the last line, plus a word for the XOF shift
+	u32 field_bytes = stride * 32 * (lines - 1) + wpl * 32 + 32;
+	u32 lo = (top < bottom ? top : bottom) & ~31;
+	u32 hi = ((top > bottom ? top : bottom) + field_bytes + 31) & ~31;
+	if (hi <= lo || hi - lo > 0x200000) return false; // no framebuffer is over 2 MiB
+
+	if (lo < 0x00004000 || hi > 0x01600000) return false;
+	if (lo < 0x00500000 && hi > 0x00100000) return false;
+
+	*start = lo;
+	*len = hi - lo;
+	return true;
+}
+
 // Returns true when it changed the VI, in which case preboot_signal_end() must be
 // called before the IPL draws anything. On anything unexpected it changes nothing
 // and returns false, which leaves the delay working exactly as it did before.
-bool preboot_signal_begin(u32 vimode, u16 dispSizeY, u16 dispPosY) {
+bool preboot_signal_begin(u32 vimode, u16 dispSizeY) {
 	preboot_active = false;
+	preboot_handover = false;
 
-	const struct _timing *tm = __gettiming(vimode);
+	preboot_timing = __gettiming(vimode);
+	const struct _timing *tm = preboot_timing;
 	if (tm == NULL) return false;
 
 	// The VI has to be running and out of reset (the delay loop relies on it anyway).
@@ -284,65 +372,80 @@ bool preboot_signal_begin(u32 vimode, u16 dispSizeY, u16 dispPosY) {
 	if ((vtr & 0x0f) != tm->equ) return false;  // VI not in the IPL's mode (yet)
 	if ((vtr >> 4) != 0) return false;           // already showing a picture
 
-	u32 div1 = 2, div2 = 1;
 	u32 nonInter = vimode & 0x03;
-	if (nonInter == VI_PROGRESSIVE || nonInter == VI_3D) {
-		div1 = 1;
-		div2 = 2;
+	bool progressive = (nonInter == VI_PROGRESSIVE || nonInter == VI_3D);
+	s32 lines = progressive ? dispSizeY : dispSizeY / 2; // active lines per field
+	if (lines < 2 || lines > tm->acv) return false;
+
+	// Undo the IPL's blanking to get the pre/post-blanking of its picture. Values are
+	// checked against the mode's own minimums, which the wrong split fails.
+	s32 min_prb = tm->prbOdd < tm->prbEven ? tm->prbOdd : tm->prbEven;
+	s32 min_psb = tm->psbOdd < tm->psbEven ? tm->psbOdd : tm->psbEven;
+	s32 psb_odd, prb_odd, psb_even, prb_even;
+	bool found = false;
+	for (u32 split = 0; split < 2 && !found; split++) {
+		s32 to_prb = split == 0 ? 2 * lines - 2 : lines; // SDK, then libogc2
+		s32 to_psb = split == 0 ? 2 : lines;
+		psb_odd = (s32)preboot_saved[1] - to_psb;
+		prb_odd = (s32)preboot_saved[2] - to_prb;
+		psb_even = (s32)preboot_saved[3] - to_psb;
+		prb_even = (s32)preboot_saved[4] - to_prb;
+		found = prb_odd >= min_prb && prb_even >= min_prb && prb_odd <= 0x3ff && prb_even <= 0x3ff &&
+			psb_odd >= min_psb && psb_even >= min_psb && psb_odd <= 0x3ff && psb_even <= 0x3ff;
 	}
+	if (!found) return false;
 
-	u32 lines = dispSizeY / div1; // active lines per field
-	if (lines == 0 || lines > tm->acv) return false;
-
-	// Pre-blanking for the IPL's picture position.
-	u32 prb = div2 * dispPosY;
-	s32 prb_odd, prb_even;
-	if (prb % 2) {
-		prb_odd = tm->prbEven + prb;
-		prb_even = tm->prbOdd + prb;
-	} else {
-		prb_odd = tm->prbOdd + prb;
-		prb_even = tm->prbEven + prb;
-	}
-
-	// Blanking only moves the active lines into pre/post-blanking, it never changes a
-	// field's length, so post-blanking is whatever keeps that length exactly as the
-	// IPL programmed it.
-	s32 psb_odd = (s32)preboot_saved[1] + (s32)preboot_saved[2] - (s32)(2 * lines) - prb_odd;
-	s32 psb_even = (s32)preboot_saved[3] + (s32)preboot_saved[4] - (s32)(2 * lines) - prb_even;
-	if (prb_odd < 1 || prb_odd > 0x3ff || prb_even < 1 || prb_even > 0x3ff) return false;
-	if (psb_odd < 1 || psb_odd > 0x3ff || psb_even < 1 || psb_even > 0x3ff) return false;
-
-	// Same words per line as the IPL, stride 0: every line scans the same black line.
+	u32 fb_start = 0, fb_len = 0;
 	u16 picconf = preboot_saved[9];
-	u32 wpl = (picconf >> 8) & 0x7f;
-	if (wpl == 0 || wpl * 32 > sizeof(preboot_black_line)) return false;
-
-	for (u32 i = 0; i < sizeof(preboot_black_line) / sizeof(u32); i++) {
-		preboot_black_line[i] = VI_YUV_BLACK;
-	}
-	preboot_flush_dcache(preboot_black_line, sizeof(preboot_black_line));
-
-	u32 fb = (u32)preboot_black_line & 0x3fffffff; // physical address
+	u32 fb = 0;
 	u16 poff = 0;
-	if (fb >= 0x01000000) {
-		fb >>= 5;
-		poff = 1;
+	preboot_handover = preboot_ipl_fb_region(lines, &fb_start, &fb_len);
+	if (preboot_handover) {
+		// The IPL hasn't drawn anything yet; it renders its first frame over this.
+		u32 *p = (u32*)(fb_start | 0x80000000);
+		for (u32 i = 0; i < fb_len / 4; i++) {
+			p[i] = VI_YUV_BLACK;
+		}
+		preboot_flush_dcache(p, fb_len);
+	} else {
+		// Same words per line as the IPL, stride 0: every line scans the same black line.
+		u32 wpl = (picconf >> 8) & 0x7f;
+		if (wpl == 0 || wpl * 32 > sizeof(preboot_black_line)) return false;
+
+		for (u32 i = 0; i < sizeof(preboot_black_line) / sizeof(u32); i++) {
+			preboot_black_line[i] = VI_YUV_BLACK;
+		}
+		preboot_flush_dcache(preboot_black_line, sizeof(preboot_black_line));
+
+		fb = (u32)preboot_black_line & 0x3fffffff; // physical address
+		if (fb >= 0x01000000) {
+			fb >>= 5;
+			poff = 1;
+		}
 	}
 
-	// Point the scanout at the black line first, then give the fields their active
-	// lines, so no field ever shows anything else.
-	_viReg[VIREG_TFBL_HI] = (poff << 12) | ((fb >> 16) & 0xff);
-	_viReg[VIREG_TFBL_LO] = fb & 0xffff;
-	_viReg[VIREG_BFBL_HI] = (fb >> 16) & 0xff;
-	_viReg[VIREG_BFBL_LO] = fb & 0xffff;
-	_viReg[VIREG_PICCONF] = picconf & 0xff00;
+	u32 msr;
+	if (!preboot_wait_field_start(&msr)) {
+		preboot_handover = false;
+		return false;
+	}
+
+	if (!preboot_handover) {
+		// Point the scanout at the black line first, then give the fields their
+		// active lines, so no field ever shows anything else.
+		_viReg[VIREG_TFBL_HI] = (poff << 12) | ((fb >> 16) & 0xff);
+		_viReg[VIREG_TFBL_LO] = fb & 0xffff;
+		_viReg[VIREG_BFBL_HI] = (fb >> 16) & 0xff;
+		_viReg[VIREG_BFBL_LO] = fb & 0xffff;
+		_viReg[VIREG_PICCONF] = picconf & 0xff00;
+	}
 
 	_viReg[VIREG_PSB_ODD] = (u16)psb_odd;
 	_viReg[VIREG_PRB_ODD] = (u16)prb_odd;
 	_viReg[VIREG_PSB_EVEN] = (u16)psb_even;
 	_viReg[VIREG_PRB_EVEN] = (u16)prb_even;
 	_viReg[VIREG_VTR] = (u16)((lines << 4) | tm->equ);
+	preboot_irq_restore(msr);
 
 	preboot_active = true;
 	return true;
@@ -350,8 +453,17 @@ bool preboot_signal_begin(u32 vimode, u16 dispSizeY, u16 dispPosY) {
 
 void preboot_signal_end(void) {
 	if (!preboot_active) return;
+	preboot_active = false;
 
-	// Blank first, then put the IPL's framebuffer and stride back.
+	// Handover: leave the picture on. It already has the IPL's size, position and
+	// framebuffer, so the IPL un-blanking for the animation changes nothing on the wire.
+	if (preboot_handover) return;
+
+	// Fallback: blank first, then put the IPL's framebuffer and stride back. If the
+	// field start can't be caught, write anyway -- the IPL still has to get its
+	// registers back.
+	u32 msr;
+	bool irq_off = preboot_wait_field_start(&msr);
 	_viReg[VIREG_VTR] = preboot_saved[0];
 	_viReg[VIREG_PSB_ODD] = preboot_saved[1];
 	_viReg[VIREG_PRB_ODD] = preboot_saved[2];
@@ -363,6 +475,5 @@ void preboot_signal_end(void) {
 	_viReg[VIREG_BFBL_HI] = preboot_saved[7];
 	_viReg[VIREG_BFBL_LO] = preboot_saved[8];
 	_viReg[VIREG_PICCONF] = preboot_saved[9];
-
-	preboot_active = false;
+	if (irq_off) preboot_irq_restore(msr);
 }
