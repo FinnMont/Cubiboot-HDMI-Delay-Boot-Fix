@@ -411,7 +411,22 @@ __attribute_used__ void pre_menu_init(int unk) {
         VIWaitForRetrace();
         if (i == 1) {
             holding_picture = preboot_signal_begin(rmode->viTVMode, rmode->viHeight, rmode->viYOrigin);
-            playing_sound = preboot_sound_begin(preboot_sound_volume);
+            int sound_status = preboot_sound_begin(preboot_sound_volume);
+            playing_sound = (sound_status == PREBOOT_SOUND_PLAYING);
+
+            // DIAGNOSTIC BUILD: tint the held picture to show what the sound code did.
+            // grey = volume 0 / not set, blue = playing, red = audio DMA already running,
+            // green = audio DMA interrupt already in use, magenta = DMA never advanced.
+            static const u32 status_color[] = {
+                [PREBOOT_SOUND_OFF]           = 0x3C803C80, // grey
+                [PREBOOT_SOUND_PLAYING]       = 0x29F0296E, // blue
+                [PREBOOT_SOUND_DMA_BUSY]      = 0x515A51F0, // red
+                [PREBOOT_SOUND_IRQ_BUSY]      = 0x91369122, // green
+                [PREBOOT_SOUND_NOT_ADVANCING] = 0x6ACA6ADE, // magenta
+            };
+            if (sound_status >= 0 && sound_status <= PREBOOT_SOUND_NOT_ADVANCING) {
+                preboot_signal_set_color(status_color[sound_status]);
+            }
         }
     }
     if (playing_sound) {

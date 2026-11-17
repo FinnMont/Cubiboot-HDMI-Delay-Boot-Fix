@@ -7,4 +7,5 @@ void ogc__VIInit(u32 vimode);
 // after a VIWaitForRetrace(); end is only needed when begin returned true.
 bool preboot_signal_begin(u32 vimode, u16 dispSizeY, u16 dispPosY);
 void preboot_signal_end(void);
+void preboot_signal_set_color(u32 yuyv); // diagnostic: tint the held picture
 

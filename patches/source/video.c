@@ -348,6 +348,16 @@ bool preboot_signal_begin(u32 vimode, u16 dispSizeY, u16 dispPosY) {
 	return true;
 }
 
+// Diagnostic: repaint the held picture in another colour (packed Y Cb Y Cr). Only does
+// anything while the picture is being held.
+void preboot_signal_set_color(u32 yuyv) {
+	if (!preboot_active) return;
+	for (u32 i = 0; i < sizeof(preboot_black_line) / sizeof(u32); i++) {
+		preboot_black_line[i] = yuyv;
+	}
+	preboot_flush_dcache(preboot_black_line, sizeof(preboot_black_line));
+}
+
 void preboot_signal_end(void) {
 	if (!preboot_active) return;
 

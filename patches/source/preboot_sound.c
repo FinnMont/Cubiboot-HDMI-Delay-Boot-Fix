@@ -72,8 +72,9 @@ static inline void irq_restore(u32 msr) {
 }
 
 static void fill_soft_noise(u32 volume) {
-	// volume 1-100 -> peak amplitude 10-1000 out of 32767 (about -70 to -30 dBFS)
-	const s32 amp = (s32)volume * 10;
+	// volume 1-100 -> peak amplitude 80-8000 out of 32767 (about -52 to -12 dBFS):
+	// 100 is a plainly audible hiss, low values are barely there.
+	const s32 amp = (s32)volume * 80;
 	u32 rng = 0x2545F491;
 	s32 smooth = 0;
 
@@ -89,14 +90,14 @@ static void fill_soft_noise(u32 volume) {
 	sound_flush_dcache(preboot_sound_buf, sizeof(preboot_sound_buf));
 }
 
-bool preboot_sound_begin(u32 volume) {
+int preboot_sound_begin(u32 volume) {
 	sound_active = false;
-	if (volume == 0) return false;
+	if (volume == 0) return PREBOOT_SOUND_OFF;
 	if (volume > 100) volume = 100;
 
 	// Leave the audio alone if anything already owns it.
-	if (_dspReg[DSPREG_AIDMA_CTRL] & AIDMA_ENABLE) return false;
-	if (_dspReg[DSPREG_CSR] & DSPCR_AIINTMSK) return false;
+	if (_dspReg[DSPREG_AIDMA_CTRL] & AIDMA_ENABLE) return PREBOOT_SOUND_DMA_BUSY;
+	if (_dspReg[DSPREG_CSR] & DSPCR_AIINTMSK) return PREBOOT_SOUND_IRQ_BUSY;
 
 	fill_soft_noise(volume);
 
@@ -121,10 +122,10 @@ bool preboot_sound_begin(u32 volume) {
 	while (_dspReg[DSPREG_AIDMA_LEFT] == left) {
 		if (read_tbl() - start > timeout_ticks) {
 			preboot_sound_end();
-			return false;
+			return PREBOOT_SOUND_NOT_ADVANCING;
 		}
 	}
-	return true;
+	return PREBOOT_SOUND_PLAYING;
 }
 
 void preboot_sound_end(void) {
