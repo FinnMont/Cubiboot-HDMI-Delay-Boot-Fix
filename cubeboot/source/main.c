@@ -59,6 +59,33 @@ extern const void _end;
 void *xfb;
 GXRModeObj *rmode;
 
+// The loader's picture. It starts in 480p whenever the console can output it (a digital
+// or component cable), because with force_progressive the boot animation -- and the
+// preboot hold before it -- run in 480p too, so an HDMI adapter and TV see that mode
+// from the loader's very first frame instead of switching to it later. The setting
+// itself is only known once config.ini has been read; if it turns out to be off (or the
+// IPL can't do progressive), the loader switches to the console's interlaced mode then.
+u32 console_tv_mode;                     // the console's own TV format, before any switch
+GXRModeObj *loader_interlaced_mode;      // its interlaced mode, for when 480p isn't wanted
+static GXRModeObj loader_progressive_mode;
+
+bool loader_video_is_progressive(void) {
+    return rmode != NULL && (rmode->viTVMode & 0x03) == VI_PROGRESSIVE;
+}
+
+// Switch the loader's black picture to another mode. The framebuffer is cleared to black
+// before the picture switches over, so nothing else ever shows.
+void loader_set_video(GXRModeObj *mode) {
+    rmode = mode;
+    VIDEO_Configure(rmode);
+    VIDEO_SetNextFramebuffer(xfb);
+    VIDEO_ClearFrameBuffer(rmode, xfb, COLOR_BLACK);
+    VIDEO_SetBlack(FALSE);
+    VIDEO_Flush();
+    VIDEO_WaitVSync();
+    VIDEO_WaitVSync();
+}
+
 // this will be used during system init
 void *__attribute__((used)) __myArena1Hi = (void*)BS2_BASE_ADDR;
 
@@ -100,6 +127,7 @@ int main(int argc, char **argv) {
     // rmode = VIDEO_GetPreferredMode(NULL);
     // rmode = &TVNtsc480IntDf;
     u32 tvmode = VIDEO_GetCurrentTvMode();
+    console_tv_mode = tvmode;
     switch (tvmode) {
         case VI_NTSC:
             rmode = &TVNtsc480IntDf;
@@ -114,6 +142,21 @@ int main(int argc, char **argv) {
             rmode = &TVEurgb60Hz480IntDf;
             break;
     }
+    loader_interlaced_mode = rmode;
+
+    // 480p as the IPL runs it with force_progressive: 640x448, same position (see
+    // pre_main in the patches; an NTSC IPL keeps its own size, which can differ by a few
+    // lines and then costs a quick re-sync when the preboot hold starts).
+    loader_progressive_mode = TVNtsc480Prog;
+    loader_progressive_mode.efbHeight = 448;
+    loader_progressive_mode.xfbHeight = 448;
+    loader_progressive_mode.viXOrigin = 40;
+    loader_progressive_mode.viYOrigin = 16;
+    loader_progressive_mode.viWidth = 640;
+    loader_progressive_mode.viHeight = 448;
+    if (VIDEO_HaveComponentCable()) {
+        rmode = &loader_progressive_mode;
+    }
     xfb = MEM_K0_TO_K1(ROUND_UP_1K(get_symbol_value(symshdr, syment, symstringdata, "_patches_end"))); // above patches, below stack
 #ifdef CONSOLE_ENABLE
 	console_init(xfb,20,20,rmode->fbWidth,rmode->xfbHeight,rmode->fbWidth*VI_DISPLAY_PIX_SZ);
@@ -127,7 +170,7 @@ int main(int argc, char **argv) {
 	VIDEO_SetBlack(FALSE);
 	VIDEO_Flush();
 	VIDEO_WaitVSync();
-    if (rmode->viTVMode & VI_NON_INTERLACE) {
+    if ((rmode->viTVMode & 0x03) != VI_INTERLACE) {
         VIDEO_WaitVSync();
     }
     else {
@@ -194,6 +237,17 @@ int main(int argc, char **argv) {
     if (current_bios->version == IPL_NTSC_10) {
         settings.progressive_enabled = FALSE;
     }
+
+#ifdef VIDEO_ENABLE
+    // Now that config.ini is read and the IPL is known, settle the loader's picture on the
+    // mode the boot animation will use, if it isn't there already: 480p with
+    // force_progressive, the console's interlaced mode without (see loader_set_video).
+    if (settings.progressive_enabled && !loader_video_is_progressive()) {
+        loader_set_video(&loader_progressive_mode);
+    } else if (!settings.progressive_enabled && loader_video_is_progressive()) {
+        loader_set_video(loader_interlaced_mode);
+    }
+#endif
 
 //// elf world pt2
 
